@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+.venv/
+venv/
+env/
+
+# Output
+Results/
+debug_log.txt
+
+# Local inputs (do not commit)
+wallets.txt
+proxy.txt
+
+# IDE
+.cursor/
+.vscode/
+*.swp
+*.swo
+
+# Tool logs
+.playwright-mcp/

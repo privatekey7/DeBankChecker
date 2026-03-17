@@ -1,0 +1,5 @@
+curl_cffi>=0.5.0
+openpyxl>=3.1.0
+colorama>=0.4.6
+questionary>=2.0.0
+pytest>=7.0
