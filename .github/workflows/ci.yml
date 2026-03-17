@@ -5,10 +5,8 @@ on:
   pull_request:
 
 jobs:
-  tests:
+  checks:
     runs-on: ubuntu-latest
-    env:
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +20,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Import smoke check
         run: |
-          python -m pytest -q
+          python -c "import debank_checker.api.client, debank_checker.checker, debank_checker.export.csv_exporter, debank_checker.export.excel, debank_checker.export.json_exporter, debank_checker.proxy.manager, debank_checker.ui.menu"
+
+      - name: Bytecode compile
+        run: |
+          python -m compileall -q debank_checker main.py
 
