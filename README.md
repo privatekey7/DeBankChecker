@@ -1,5 +1,7 @@
 # DeBank Balance Checker
 
+[![CI](https://github.com/privatekey7/DeBankChecker/actions/workflows/ci.yml/badge.svg)](https://github.com/privatekey7/DeBankChecker/actions/workflows/ci.yml)
+
 CLI‑утилита на Python для массовой проверки кошельков через DeBank API (**Tokens + DeFi + NFT**) с экспортом результатов (**Excel / CSV / JSON**).
 
 **TG:** `https://t.me/privatekey7`
