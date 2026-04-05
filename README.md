@@ -4,7 +4,7 @@
 
 CLI‑утилита на Python для массовой проверки кошельков через DeBank API (**Tokens + DeFi + NFT**) с экспортом результатов (**Excel / CSV / JSON**).
 
-**TG:** `https://t.me/privatekey7`
+**TG:** `https://t.me/privatekey_ai`
 
 ---
 
