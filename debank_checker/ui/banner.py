@@ -59,9 +59,9 @@ def create_subtitle() -> str:
     """Подзаголовок."""
     return "\n".join(
         [
-            _center_text_in_banner(f"{YELLOW}{BRIGHT}BALANCE CHECKER v1.0.8{RESET}"),
+            _center_text_in_banner(f"{YELLOW}{BRIGHT}BALANCE CHECKER v1.1.0{RESET}"),
             _center_text_in_banner(f"{DIM}EVM · Tokens · DeFi · NFT{RESET}"),
-            _center_text_in_banner(f"{DIM}TG: https://t.me/privatekey7{RESET}"),
+            _center_text_in_banner(f"{DIM}TG: https://t.me/privatekey_ai{RESET}"),
         ]
     )
 
