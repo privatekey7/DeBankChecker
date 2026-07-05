@@ -311,6 +311,7 @@ def check_wallet(address: str, proxy_manager: ProxyManager, wallet_idx: int = -1
     if snapshots:
         chosen = _rep(_largest_agreeing_cluster(snapshots))
         chosen["corroborated"] = False
+        chosen["status"] = "ERROR"
         chosen["error"] = (chosen.get("error")
                            or "баланс не подтверждён (возможен фантом) — взято консервативное значение")
         if DEBUG:
