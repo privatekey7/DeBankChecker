@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Import smoke check
+        run: |
+          python -c "import debank_checker.api.client, debank_checker.checker, debank_checker.export.csv_exporter, debank_checker.export.excel, debank_checker.export.json_exporter, debank_checker.proxy.manager, debank_checker.ui.menu"
+
+      - name: Bytecode compile
+        run: |
+          python -m compileall -q debank_checker main.py
+
