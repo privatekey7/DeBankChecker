@@ -1,124 +1,56 @@
-# DeBank Balance Checker
+# FarmerPro
+<img width="1193" height="727" alt="Снимок экрана 2026-04-20 150801" src="https://github.com/user-attachments/assets/2bcfb31c-2c54-4203-9747-c21c440e6b54" />
 
-[![CI](https://github.com/privatekey7/DeBankChecker/actions/workflows/ci.yml/badge.svg)](https://github.com/privatekey7/DeBankChecker/actions/workflows/ci.yml)
-
-CLI‑утилита на Python для массовой проверки кошельков через DeBank API (**Tokens + DeFi + NFT**) с экспортом результатов (**Excel / CSV / JSON**).
-
-**TG:** `https://t.me/privatekey_ai`
+**[English](#english) | [Русский](#русский)**
 
 ---
 
-## Возможности
+## English
 
-- **Массовая проверка** списка адресов из `wallets.txt`
-- **Прокси‑ротация** + rate limiting / cooldown (для стабильности)
-- **Параллельная обработка** кошельков
-- **Экспорт**:
-  - Excel (`.xlsx`)
-  - CSV
-  - JSON
-- **Фильтры экспорта** по сетям/токенам/NFT/протоколам (в меню после проверки)
+A modular desktop tool for managing crypto accounts and wallets.
 
----
+| Module | Description |
+|--------|-------------|
+| EVM Balance Checker | Check balances of EVM wallets across networks |
+| SVM Balance Checker | Check balances of Solana wallets |
+| Token Collector | Collect tokens from wallets via swap and bridge |
+| Proxy Checker | Check proxy availability and quality |
+| Twitter Checker | Check Twitter/X account status |
+| Discord Token Checker | Check Discord token status |
 
-## Требования
-
-- **Python 3.10+** (рекомендуется)
-- Windows / macOS / Linux
-
-Зависимости перечислены в `requirements.txt` (ключевые: `curl_cffi`, `openpyxl`, `questionary`, `colorama`).
-
----
-
-## Установка
-
-В папке проекта:
+### Installation
 
 ```bash
-python -m venv .venv
-```
-
-Windows PowerShell:
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-Дальше:
-
-```bash
+git clone https://github.com/privatekey7/Farmer_Pro.git
+cd Farmer_Pro
 pip install -r requirements.txt
-```
-
----
-
-## Подготовка файлов
-
-### `wallets.txt`
-
-- **Один адрес на строку**
-- Пустые строки игнорируются
-- Строки, начинающиеся с `#`, считаются комментариями
-
-Пример:
-
-```text
-# my wallets
-0x0000000000000000000000000000000000000000
-0x1111111111111111111111111111111111111111
-```
-
-### `proxy.txt` (обязательно)
-
-Прокси обязательны: при пустом `proxy.txt` программа завершится с ошибкой.
-
-Поддерживаемые форматы строк:
-
-- `ip:port`
-- `ip:port:login:password`
-
-Пример:
-
-```text
-127.0.0.1:8080
-10.10.10.10:3128:user:pass
-```
-
----
-
-## Запуск
-
-```bash
 python main.py
 ```
 
-Поток работы:
-
-1. Запускается проверка всех кошельков
-2. Печатается прогресс‑бар
-3. После завершения открывается **интерактивное меню** экспорта (что именно выгружать)
-4. Вы выбираете формат (**Excel / CSV / JSON**)
-5. Файлы сохраняются в папку `Results/`
+For detailed documentation visit: https://privatekey7.gitbook.io/farmerpro-en/
 
 ---
 
-## Результаты
+## Русский
 
-Вывод сохраняется в:
+Модульный десктопный инструмент для работы с крипто-аккаунтами и кошельками.
 
-- `Results/`
+| Модуль | Описание |
+|--------|----------|
+| EVM Balance Checker | Проверка балансов EVM-кошельков по сетям |
+| SVM Balance Checker | Проверка балансов Solana-кошельков |
+| Token Collector | Сбор токенов с кошельков через свап и бридж |
+| Proxy Checker | Проверка работоспособности прокси |
+| Twitter Checker | Проверка статуса Twitter/X аккаунтов |
+| Discord Token Checker | Проверка статуса Discord токенов |
 
-Файлы именуются с учётом выбранного экспорта и времени запуска.
+### Установка
 
----
+```bash
+git clone https://github.com/privatekey7/Farmer_Pro.git
+cd Farmer_Pro
+pip install -r requirements.txt
+python main.py
+```
 
-## Защита от «фантомных» балансов
-
-Под высокой конкуренцией DeBank-API иногда возвращает портфель **другого адреса**
-(response contamination): на кошельке с $15 «появляются» сотни тысяч/миллионы.
-Воспроизводится только при параллельных запросах (последовательно — нет).
-
-Чекер принимает баланс кошелька, только если он **подтверждён двумя независимыми
-запросами**, сошедшимися по сумме (корроборация). Случайный фантом не повторяется
-и отбрасывается, истинный баланс стабилен и подтверждается. Параметры — в
-`debank_checker/config.py` (`CORROBORATION_*`).
+Подробная документация: https://privatekey7.gitbook.io/farmerpro-ru/
