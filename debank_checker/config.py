@@ -11,6 +11,20 @@ OUTPUT_DIR = "Results"  # папка для Excel-результатов
 REQUEST_TIMEOUT = 3  # секунд (быстрый failover при мёртвых прокси, см. docs/DEBUG_REPORT.md)
 API_KEY_INIT = "3b92c003-ddc1-4c2d-b36e-781838f362c5"
 
+# --- Источник балансов ---------------------------------------------------
+# "rabby"  — получать балансы через Rabby API (по умолчанию; см. api/rabby_client.py).
+#            total берётся из /v1/user/total_balance напрямую → нет фантомов.
+# "debank" — старое поведение через DeBank API (оставлено для отката).
+BALANCE_SOURCE = "rabby"
+
+# Rabby API (начальный ключ ротируется сервером через x-set-api-key).
+# x-version = версия веб-клиента Rabby, под которую записан HAR; при поломке
+# подписи — обнови из свежего HAR.
+RABBY_API_KEY_INIT = "7cee6f31-6611-4821-beb8-6ca9e29ed965"
+RABBY_CLIENT_VERSION = "0.94.1"
+# is_core=true → в total и в токенах только проверенные (core) токены, скам отсекается.
+RABBY_IS_CORE = True
+
 # Прокси и rate limit
 RATE_LIMIT_REQ_PER_MIN = 60  # запросов в минуту на один прокси
 RETRY_ATTEMPTS = 10  # попыток при ошибке (с новым прокси, без задержки между попытками)
@@ -33,8 +47,11 @@ MIN_VALUE_DISPLAY = 0.01
 # Баланс принимается, только если подтверждён двумя независимыми выборками,
 # сошедшимися в пределах допуска. Фантом случаен и не повторяется → отбрасываем;
 # истинное значение стабильно → подтверждается.
-CORROBORATION_ENABLED = True      # False — старое поведение (1 запрос)
-CORROBORATION_MIN_AGREE = 2       # сошедшихся выборок нужно для приёма
+# Для Rabby (BALANCE_SOURCE="rabby") total берётся из авторитетного агрегата
+# total_balance, поэтому по умолчанию MIN_AGREE=1 — корроборация не тратит
+# лишние запросы, но механика остаётся как страховка. Для DeBank подними до 2.
+CORROBORATION_ENABLED = True      # False — принять первую же выборку
+CORROBORATION_MIN_AGREE = 1       # сошедшихся выборок нужно для приёма
 CORROBORATION_MAX_FETCHES = 8     # бюджет успешных выборок на кошелёк
 CORROBORATION_REL_TOL = 0.02      # относительный допуск согласия (2%)
 CORROBORATION_ABS_TOL = 1.0       # абсолютный допуск согласия (USD)
