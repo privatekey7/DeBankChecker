@@ -1,25 +1,31 @@
 """
 Rabby API Client (api.rabby.io).
 
-Схема подписи запросов ИДЕНТИЧНА DeBank (см. api/client.py), меняются только
-префикс (`rabby-api\\n`) и набор заголовков идентификации клиента
-(`x-client`/`x-version` вместо `source`/`account`). Проверено воспроизведением
+Схема подписи запросов: см. sign_request ниже. Проверено воспроизведением
 подписи из HAR веб-версии Rabby байт-в-байт (65/68 запросов; расхождения — в
 неиспользуемых эндпоинтах has_new_tx/history_list).
 
-Зачем миграция: DeBank-чекер считал total ВРУЧНУЮ (tokens_usd + protocols_usd
-из двух запросов), а под высокой конкуренцией DeBank изредка отдаёт ответ от
-чужого адреса — так на кошельке с $15 «появлялись» миллионы. Rabby отдаёт
-готовый агрегированный `total_usd_value` одним запросом
-(`/v1/user/total_balance?is_core=true`), поэтому итоговая сумма больше не
-зависит от ручного суммирования потенциально загрязнённых ответов.
+Заголовки идентификации должны ТОЧНО повторять клиент Rabby (сверено с HAR
+браузерного расширения — tests/fixtures и свежий HAR расширения):
+  - подписные заголовки — в нижнем регистре (x-api-key, x-api-time, ...);
+  - x-api-time — время ВЫДАЧИ текущего API-ключа, а не время запроса
+    (в HAR оно одинаково во всех запросах сессии и на ~23 млн сек старше
+    x-api-ts);
+  - x-api-ver: v2 отправляется (в отличие от урезанной веб-фикстуры);
+  - браузерные заголовки (accept-language, dnt, priority, sec-fetch-*)
+    досылаются поверх impersonate-фингерпринта curl_cffi.
+Анти-бот API на любое отклонение отвечает фейковым 429 с пустым телом —
+именно так душился /v1/user/token_list при верной подписи (проверено на
+live-API: старые заголовки → 429, заголовки клиента → 200; расширение
+делает ~10 req/s без единого 429).
 
-Прокси обязателен (как и в DeBank-клиенте).
+Прокси обязателен.
 """
 
 import hashlib
 import hmac as hmac_lib
 import random
+import threading
 import time
 from typing import Any
 
@@ -27,15 +33,37 @@ import curl_cffi.requests as cffi_requests
 
 from debank_checker.config import (
     RABBY_API_KEY_INIT,
+    RABBY_API_KEY_INIT_TIME,
     RABBY_CLIENT_VERSION,
     REQUEST_TIMEOUT,
 )
 
 API_BASE = "https://api.rabby.io"
 SIGN_PREFIX = "rabby-api\n"
-# Алфавит nonce — как в клиенте Rabby/DeBank (sic: без Y и j).
+# Алфавит nonce — как в клиенте Rabby (sic: без Y и j).
 NONCE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXTZabcdefghiklmnopqrstuvwxyz"
 NONCE_LENGTH = 40
+
+# Общий на процесс магазин ключа: снапшоты создают новый RabbyClient на каждую
+# попытку, а ротированный сервером ключ терять нельзя — иначе каждый клиент
+# снова начнёт с init-ключа и его лимитов. Все клиенты продолжают с последнего
+# выданного ключа; время выдачи нового ключа — момент ротации.
+_KEY_LOCK = threading.Lock()
+_KEY_STATE = {"key": RABBY_API_KEY_INIT, "time": RABBY_API_KEY_INIT_TIME}
+
+
+def _current_key() -> tuple[str, int]:
+    with _KEY_LOCK:
+        return _KEY_STATE["key"], _KEY_STATE["time"]
+
+
+def _rotate_key(new_key: str) -> int:
+    """Обновляет общий ключ; возвращает время выдачи действующего ключа."""
+    with _KEY_LOCK:
+        if new_key and new_key != _KEY_STATE["key"]:
+            _KEY_STATE["key"] = new_key
+            _KEY_STATE["time"] = int(time.time())
+        return _KEY_STATE["time"]
 
 
 def sort_params(params: dict) -> str:
@@ -90,8 +118,7 @@ class RabbyClient:
     def __init__(self, proxy: str, impersonate: str = "chrome124"):
         if not proxy:
             raise ValueError("Прокси обязателен для Rabby API")
-        self._api_key = RABBY_API_KEY_INIT
-        self._init_ts = int(time.time())
+        self._api_key, self._key_time = _current_key()
         self._impersonate = impersonate
         proxies = {"https": proxy, "http": proxy}
         self._session = cffi_requests.Session(
@@ -100,11 +127,20 @@ class RabbyClient:
         )
 
     def _build_headers(self, params: dict, method: str, path: str) -> dict:
+        # Состав и кейсинг — строго по HAR расширения Rabby (см. докстринг
+        # модуля): отклонение карается фейковым 429 с пустым телом.
         sign = sign_request(params, method, path)
         return {
             "accept": "application/json, text/plain, */*",
-            "X-API-Key": self._api_key,
-            "X-API-Time": str(self._init_ts),
+            "accept-language": "ru,ru-RU;q=0.9,en-US;q=0.8,en;q=0.7",
+            "dnt": "1",
+            "priority": "u=1, i",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "none",
+            "sec-fetch-storage-access": "active",
+            "x-api-key": self._api_key,
+            "x-api-time": str(self._key_time),
             "x-api-ts": str(sign["ts"]),
             "x-api-nonce": sign["nonce"],
             "x-api-ver": sign["version"],
@@ -122,12 +158,15 @@ class RabbyClient:
             headers=headers,
             timeout=timeout or REQUEST_TIMEOUT,
         )
-        resp.raise_for_status()
 
-        # Сервер может ротировать ключ через x-set-api-key (как в DeBank).
+        # Ротация ключа читается ДО raise_for_status: сервер может выдать
+        # новый ключ и вместе с ошибкой (429/403) — раньше он терялся.
         new_key = resp.headers.get("x-set-api-key")
-        if new_key:
+        if new_key and new_key != self._api_key:
+            self._key_time = _rotate_key(new_key)
             self._api_key = new_key
+
+        resp.raise_for_status()
 
         data = resp.json()
         if isinstance(data, dict) and "data" in data and set(data.keys()) <= {"data", "error_code"}:
@@ -145,6 +184,17 @@ class RabbyClient:
         params = {"id": address.lower(), "is_core": "true" if is_core else "false"}
         result = self._get("/v1/user/total_balance", params)
         return result if isinstance(result, dict) else {}
+
+    def get_cache_token_list(self, address: str) -> list:
+        """Токены кошелька по ВСЕМ сетям одним запросом (серверный кэш).
+
+        Заменяет десятки запросов token_list (по одному на сеть) — расширение
+        Rabby само использует этот эндпоинт для быстрой загрузки. Ответ — тот
+        же формат токенов (amount/price/is_core/is_scam), фильтрация на
+        стороне чекера.
+        """
+        result = self._get("/v1/user/cache_token_list", {"id": address.lower()})
+        return result if isinstance(result, list) else []
 
     def get_token_list(self, address: str, chain_id: str, is_all: bool = False) -> list:
         """Список токенов кошелька в конкретной сети.

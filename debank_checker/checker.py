@@ -1,14 +1,12 @@
-"""  
-Проверка балансов кошельков: tokens + portfolio (+ NFT заглушка)  
-"""  
-  
-import time  
-from typing import Any  
-  
-from debank_checker.api.client import DeBankClient
+"""
+Проверка балансов кошельков через Rabby API: tokens + protocols + NFT
+"""
+
+import time
+from typing import Any
+
 from debank_checker.api.rabby_client import RabbyClient
 from debank_checker.config import (
-    BALANCE_SOURCE,
     CORROBORATION_ABS_TOL,
     CORROBORATION_ENABLED,
     CORROBORATION_MAX_FETCHES,
@@ -19,7 +17,7 @@ from debank_checker.config import (
     RABBY_IS_CORE,
     RETRY_ATTEMPTS,
 )
-from debank_checker.proxy.manager import ProxyManager  
+from debank_checker.proxy.manager import ProxyManager
   
   
 def _mask_proxy(proxy: str | None) -> str:  
@@ -132,16 +130,15 @@ def _build_tokens_data(tokens: list[dict]) -> list[dict]:
     ]
 
 
-def _fetch_snapshot_rabby(address: str, proxy: str) -> dict[str, Any]:
+def _fetch_snapshot(address: str, proxy: str) -> dict[str, Any]:
     """Одна выборка баланса кошелька через Rabby API.
 
-    Ключевое отличие от DeBank: total_usd берётся из АВТОРИТЕТНОГО агрегата
-    /v1/user/total_balance (total_usd_value уже включает и токены, и DeFi —
-    проверено), а НЕ считается вручную суммой отдельных запросов. Поэтому
-    итоговая сумма не подвержена «фантомам» от загрязнённых ответов.
+    Ключевое: total_usd берётся из АВТОРИТЕТНОГО агрегата
+    /v1/user/total_balance (total_usd_value уже включает и токены, и DeFi),
+    а НЕ считается вручную суммой отдельных запросов.
 
     tokens_data / protocols_data / nft_data собираются как детализация для
-    экспорта; result-dict полностью совместим с DeBank-веткой.
+    экспорта; result-dict совместим со старой DeBank-схемой.
     """
     client = RabbyClient(proxy=proxy)
 
@@ -154,15 +151,22 @@ def _fetch_snapshot_rabby(address: str, proxy: str) -> dict[str, Any]:
         if c.get("id") and (c.get("usd_value") or 0) > 0
     ]
 
-    # 2) Токены по каждой непустой сети (is_all=false → только проверенные/core).
+    # 2) Токены: все сети одним запросом (cache_token_list); при сбое —
+    #    фолбэк на по-сетевой token_list (is_all=false → только core).
+    #    Пустой chain_list (как у расширения) → запросы токенов не нужны.
     tokens: list[dict] = []
-    for chain in nonzero_chains:
-        chain_tokens = client.get_token_list(address, chain_id=chain, is_all=not RABBY_IS_CORE)
-        for t in chain_tokens:
-            if RABBY_IS_CORE and not t.get("is_core", True):
-                continue
-            if t.get("is_verified", True) and not t.get("is_scam", False):
-                tokens.append(t)
+    if nonzero_chains:
+        try:
+            tokens = client.get_cache_token_list(address)
+        except Exception:
+            for chain in nonzero_chains:
+                chain_tokens = client.get_token_list(address, chain_id=chain, is_all=not RABBY_IS_CORE)
+                tokens.extend(chain_tokens)
+    tokens = [
+        t for t in tokens
+        if t.get("is_verified", True) and not t.get("is_scam", False)
+        and (not RABBY_IS_CORE or t.get("is_core", True))
+    ]
     tokens_usd = sum(t.get("price", 0) * t.get("amount", 0) for t in tokens)
 
     # 3) DeFi-протоколы (та же структура portfolio_item_list, что у DeBank).
@@ -237,148 +241,13 @@ def _fetch_snapshot_rabby(address: str, proxy: str) -> dict[str, Any]:
         pass
     nft_data.sort(key=lambda x: (x["chain"], x["name"]))
 
-    # Лог при аномалии (для сравнения с DeBank-веткой).
+    # Лог сырых данных при аномальном балансе.
     _write_log(address, total_usd, tokens_usd, protocols_usd, tokens, portfolio)
 
     token_chains = {t.get("chain", "") for t in tokens if t.get("chain")}
     chains = sorted(set(nonzero_chains) | token_chains | nft_chains)
 
     tokens_data = _build_tokens_data(tokens)
-    top_tokens = sorted(tokens_data, key=lambda t: t["value"], reverse=True)[:3]
-    top_str = ", ".join(f"{t['symbol']}(${t['value']:.2f})" for t in top_tokens)
-
-    return {
-        "address": address,
-        "total_usd": total_usd,
-        "tokens_usd": tokens_usd,
-        "protocols_usd": protocols_usd,
-        "nft_usd": nft_usd,
-        "tokens": len(tokens_data),
-        "chains": ", ".join(chains),
-        "top_tokens": top_str,
-        "tokens_data": tokens_data,
-        "protocols_data": protocols_data,
-        "nft_data": nft_data,
-        "proxy": proxy or "—",
-        "status": "OK",
-        "error": "",
-        "corroborated": True,
-    }
-
-
-def _fetch_snapshot(address: str, proxy: str) -> dict[str, Any]:
-    """Диспетчер источника балансов (BALANCE_SOURCE): rabby | debank."""
-    if BALANCE_SOURCE == "debank":
-        return _fetch_snapshot_debank(address, proxy)
-    return _fetch_snapshot_rabby(address, proxy)
-
-
-def _fetch_snapshot_debank(address: str, proxy: str) -> dict[str, Any]:
-    """Одна независимая выборка баланса кошелька через DeBank API (tokens + portfolio + NFT).
-
-    Бросает исключение при сетевой ошибке. Возвращает result-dict со status=OK.
-
-    ВНИМАНИЕ: под высокой конкуренцией DeBank иногда отдаёт ответ от ДРУГОГО
-    адреса (response contamination) — такая выборка внутренне консистентна и
-    в одиночку неотличима от настоящей. Отсев делает корроборация в
-    check_wallet(): фантом случаен и не повторяется, истинный баланс стабилен.
-    """
-    client = DeBankClient(proxy=proxy)
-
-    # Токены в кошельке — фильтруем скам и неверифицированные
-    tokens = client.get_total_balance_cache(address)
-    tokens = [
-        t for t in tokens
-        if t.get("is_verified", True) and not t.get("is_scam", False)
-    ]
-
-    portfolio = client.get_portfolio(address)
-
-    tokens_usd = sum(t.get("price", 0) * t.get("amount", 0) for t in tokens)
-
-    protocols_data = []
-    protocols_usd = 0.0
-    for proto in portfolio:
-        proto_value = sum(
-            _safe_position_value(item)
-            for item in proto.get("portfolio_item_list", [])
-        )
-        if round(proto_value, 2) < MIN_VALUE_DISPLAY:
-            continue
-        protocols_usd += proto_value
-
-        positions = []
-        for item in proto.get("portfolio_item_list", []):
-            net = _safe_position_value(item)
-            if round(net, 2) < MIN_VALUE_DISPLAY:
-                continue
-            detail = item.get("detail", {})
-            supply = [
-                f"{t.get('symbol', '?')} {t.get('amount', 0):.4f}"
-                for t in detail.get("supply_token_list", [])
-            ]
-            reward = [
-                f"{t.get('symbol', '?')} {t.get('amount', 0):.4f}"
-                for t in detail.get("reward_token_list", [])
-            ]
-            positions.append({
-                "type": item.get("name", ""),
-                "value": round(net, 2),
-                "supply": ", ".join(supply),
-                "rewards": ", ".join(reward),
-            })
-
-        protocols_data.append({
-            "logo": proto.get("logo_url") or "",
-            "name": proto.get("name", "?"),
-            "chain": proto.get("chain", "?"),
-            "value": round(proto_value, 2),
-            "positions": positions,
-        })
-
-    protocols_data.sort(key=lambda p: p["value"], reverse=True)
-
-    nft_usd = 0.0
-    nft_data: list[dict] = []
-    nft_chains: set[str] = set()
-    try:
-        nft_chains_list = client.get_nft_used_chains(address)
-        for chain in (nft_chains_list or [])[:10]:
-            collections = client.get_nft_collection_list(address, chain)
-            for col in collections:
-                amount = col.get("amount") or col.get("nft_count", 0)
-                if not amount:
-                    continue
-                nft_chains.add(col.get("chain_id") or chain)
-                nft_data.append({
-                    "name": col.get("name", "?"),
-                    "chain": col.get("chain_id") or chain,
-                    "amount": amount,
-                })
-    except Exception:
-        pass
-    nft_data.sort(key=lambda x: (x["chain"], x["name"]))
-
-    total_usd = tokens_usd + protocols_usd
-
-    # Лог сырых данных при аномалии (помогает увидеть, что именно отсеяла корроборация)
-    _write_log(address, total_usd, tokens_usd, protocols_usd, tokens, portfolio)
-
-    chains = sorted({t.get("chain", "") for t in tokens if t.get("chain")} | nft_chains)
-
-    tokens_data = [
-        {
-            "logo": t.get("logo_url") or "",
-            "symbol": t.get("symbol", "?"),
-            "chain": t.get("chain", "?"),
-            "amount": t.get("amount", 0),
-            "price": t.get("price", 0),
-            "value": round(t.get("price", 0) * t.get("amount", 0), 2),
-        }
-        for t in tokens
-        if round(t.get("price", 0) * t.get("amount", 0), 2) >= MIN_VALUE_DISPLAY
-    ]
-
     top_tokens = sorted(tokens_data, key=lambda t: t["value"], reverse=True)[:3]
     top_str = ", ".join(f"{t['symbol']}(${t['value']:.2f})" for t in top_tokens)
 
