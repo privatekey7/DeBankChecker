@@ -12,6 +12,7 @@ env/
 # Output
 Results/
 debug_log.txt
+logs.txt
 
 # Local inputs (do not commit)
 wallets.txt

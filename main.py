@@ -1,5 +1,5 @@
 """
-DeBank Balance Checker — точка входа
+DeBank Checker — точка входа (балансы через Rabby API)
 """
 
 import sys

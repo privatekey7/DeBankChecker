@@ -1,5 +1,5 @@
 """
-DeBank Balance Checker — массовая проверка балансов кошельков через DeBank API.
+DeBank Checker — массовая проверка балансов кошельков через Rabby API.
 """
 
 __version__ = "1.0.3"
