@@ -1,5 +1,5 @@
-"""API: DeBank клиент."""
+"""API: клиент Rabby (api.rabby.io)."""
 
-from debank_checker.api.client import DeBankClient
+from debank_checker.api.rabby_client import RabbyClient
 
-__all__ = ["DeBankClient"]
+__all__ = ["RabbyClient"]
