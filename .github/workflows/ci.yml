@@ -22,7 +22,11 @@ jobs:
 
       - name: Import smoke check
         run: |
-          python -c "import debank_checker.api.client, debank_checker.checker, debank_checker.export.csv_exporter, debank_checker.export.excel, debank_checker.export.json_exporter, debank_checker.proxy.manager, debank_checker.ui.menu"
+          python -c "import debank_checker.api.rabby_client, debank_checker.checker, debank_checker.export.csv_exporter, debank_checker.export.excel, debank_checker.export.json_exporter, debank_checker.proxy.manager, debank_checker.ui.menu"
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -q
 
       - name: Bytecode compile
         run: |
