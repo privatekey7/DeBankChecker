@@ -1,6 +1,7 @@
 """
 Общая логика фильтрации и построения данных для экспорта
 """
+from __future__ import annotations
 
 from debank_checker.export.config import ExportConfig
 

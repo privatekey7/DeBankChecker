@@ -19,8 +19,13 @@ Rabby API Client (api.rabby.io).
 live-API: старые заголовки → 429, заголовки клиента → 200; расширение
 делает ~10 req/s без единого 429).
 
-Прокси обязателен.
+Прокси обязателен (прямой режим — только явно, DBC_DIRECT=1).
+
+ВНИМАНИЕ: с 11.09.2026 total_balance и complex_app_list для части адресов
+возвращают чужие данные — см. config.py, checker.py. Клиент отдаёт ответы
+как есть; проверка — в checker.
 """
+from __future__ import annotations
 
 import hashlib
 import hmac as hmac_lib
@@ -29,14 +34,25 @@ import threading
 import time
 from typing import Any
 
-import curl_cffi.requests as cffi_requests
-
+from debank_checker import config as _cfg
+from debank_checker.api import http
+from debank_checker.api.http import RateLimiter
 from debank_checker.config import (
     RABBY_API_KEY_INIT,
     RABBY_API_KEY_INIT_TIME,
+    NFT_REQUEST_TIMEOUT,
     RABBY_CLIENT_VERSION,
     REQUEST_TIMEOUT,
 )
+
+
+_DIRECT_LIMITER = RateLimiter(_cfg.RABBY_DIRECT_RATE_PER_SEC)
+
+
+def direct_allowed() -> bool:
+    """Разрешена ли работа без прокси (config.ALLOW_DIRECT / DBC_DIRECT=1)."""
+    return bool(_cfg.ALLOW_DIRECT)
+
 
 API_BASE = "https://api.rabby.io"
 SIGN_PREFIX = "rabby-api\n"
@@ -113,18 +129,13 @@ def sign_request(
 
 
 class RabbyClient:
-    """Клиент Rabby API. Прокси обязателен."""
+    """Клиент Rabby API. Прокси обязателен, если не разрешён прямой режим."""
 
-    def __init__(self, proxy: str, impersonate: str = "chrome124"):
-        if not proxy:
-            raise ValueError("Прокси обязателен для Rabby API")
+    def __init__(self, proxy: str | None):
+        if not proxy and not direct_allowed():
+            raise ValueError("Прокси обязателен для Rabby API (или DBC_DIRECT=1 для прямого режима)")
         self._api_key, self._key_time = _current_key()
-        self._impersonate = impersonate
-        proxies = {"https": proxy, "http": proxy}
-        self._session = cffi_requests.Session(
-            impersonate=impersonate,
-            proxies=proxies,
-        )
+        self._proxy = proxy or None
 
     def _build_headers(self, params: dict, method: str, path: str) -> dict:
         # Состав и кейсинг — строго по HAR расширения Rabby (см. докстринг
@@ -150,36 +161,46 @@ class RabbyClient:
         }
 
     def _get(self, path: str, params: dict | None = None, timeout: float | None = None) -> Any:
+        """GET с подписью.
+
+        Через прокси 429/5xx сразу уходят наверх: check_wallet повторит выборку
+        через другой прокси (быстрее, чем ждать на заблокированном IP). В прямом
+        режиме (один IP) — до RABBY_RETRY_429 повторов с паузой 3·6·12 с
+        (или Retry-After).
+        """
         params = params or {}
-        headers = self._build_headers(params, "GET", path)
-        resp = self._session.get(
-            API_BASE + path,
-            params=params,
-            headers=headers,
-            timeout=timeout or REQUEST_TIMEOUT,
-        )
+        retries = int(_cfg.RABBY_RETRY_429) if self._proxy is None else 0
+        for attempt in range(retries + 1):
+            headers = self._build_headers(params, "GET", path)
+            if self._proxy is None:
+                _DIRECT_LIMITER.wait()
+            resp = http.get(API_BASE + path, self._proxy, params=params, headers=headers,
+                            timeout=timeout or REQUEST_TIMEOUT)
 
-        # Ротация ключа читается ДО raise_for_status: сервер может выдать
-        # новый ключ и вместе с ошибкой (429/403) — раньше он терялся.
-        new_key = resp.headers.get("x-set-api-key")
-        if new_key and new_key != self._api_key:
-            self._key_time = _rotate_key(new_key)
-            self._api_key = new_key
+            # Ротация ключа читается ДО raise_for_status: сервер может выдать
+            # новый ключ и вместе с ошибкой (429/403).
+            new_key = resp.headers.get("x-set-api-key")
+            if new_key and new_key != self._api_key:
+                self._key_time = _rotate_key(new_key)
+                self._api_key = new_key
 
-        resp.raise_for_status()
+            if resp.status_code in (429, 502, 503, 504) and attempt < retries:
+                time.sleep(min(http.retry_after(resp, 3.0 * (2 ** attempt)), 30.0))
+                continue
 
-        data = resp.json()
-        if isinstance(data, dict) and "data" in data and set(data.keys()) <= {"data", "error_code"}:
-            return data["data"]
-        return data
+            resp.raise_for_status()
+
+            data = resp.json()
+            if isinstance(data, dict) and "data" in data and set(data.keys()) <= {"data", "error_code"}:
+                return data["data"]
+            return data
+        raise RuntimeError("unreachable")
 
     def get_total_balance(self, address: str, is_core: bool = True) -> dict:
-        """Итоговый баланс кошелька — АВТОРИТЕТНЫЙ агрегат от сервера.
+        """Агрегат баланса: {total_usd_value, chain_list: [{id, usd_value}]}.
 
-        Возвращает dict: {total_usd_value: float, chain_list: [{id, usd_value, ...}]}.
-        is_core=true — только проверенные (core) токены, отсекает скам.
-        Это ключевой запрос миграции: total берётся отсюда напрямую, без
-        ручного суммирования → устраняет фантомные балансы в итоговой сумме.
+        НЕ источник итога (бывает заражён чужими суммами) — только контроль и
+        подсказка, в каких сетях кэш токенов мог устареть. См. checker.py.
         """
         params = {"id": address.lower(), "is_core": "true" if is_core else "false"}
         result = self._get("/v1/user/total_balance", params)
@@ -197,12 +218,7 @@ class RabbyClient:
         return result if isinstance(result, list) else []
 
     def get_token_list(self, address: str, chain_id: str, is_all: bool = False) -> list:
-        """Список токенов кошелька в конкретной сети.
-
-        Rabby не отдаёт токены всех сетей одним запросом (в отличие от DeBank
-        /token/cache_balance_list), поэтому запрашиваем по каждой сети отдельно.
-        is_all=false → только проверенные/core токены (нужный нам режим).
-        """
+        """Свежий список токенов кошелька в одной сети (is_all=false → только core)."""
         params = {
             "id": address.lower(),
             "chain_id": chain_id,
@@ -230,7 +246,12 @@ class RabbyClient:
         Заменяет пару DeBank-запросов /nft/used_chains + /nft/collection_list.
         """
         params = {"id": address.lower(), "is_all": "true" if is_all else "false"}
-        result = self._get("/v1/user/collection_list", params)
+        result = self._get("/v1/user/collection_list", params, timeout=NFT_REQUEST_TIMEOUT)
+        return result if isinstance(result, list) else []
+
+    def get_chain_list(self) -> list:
+        """Список сетей Rabby: id (строковый), community_id (EVM chain id), native_token_id."""
+        result = self._get("/v1/chain/list")
         return result if isinstance(result, list) else []
 
     def get_used_chain_list(self, address: str) -> list:

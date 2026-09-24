@@ -5,6 +5,7 @@
 клиента, а не вычислено нашей же формулой. Совпадение доказывает, что схема
 подписи верна.
 """
+from __future__ import annotations
 
 import json
 from pathlib import Path

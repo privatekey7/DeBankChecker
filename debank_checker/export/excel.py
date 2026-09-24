@@ -1,6 +1,7 @@
 """
 Экспорт результатов в Excel
 """
+from __future__ import annotations
 
 import datetime
 from pathlib import Path

@@ -2,6 +2,7 @@
 Логирование в формате: YYYY-MM-DD HH:MM:SS | LEVEL | Сообщение
 Цвета: INFO — белый, WARNING — оранжевый, SUCCESS — зелёный, ERROR — красный
 """
+from __future__ import annotations
 
 import sys
 from datetime import datetime

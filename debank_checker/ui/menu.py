@@ -3,6 +3,9 @@
 Вызывается после проверки кошельков — данные уже получены.
 Двухшаговый выбор: сначала сеть, затем токен/NFT/протокол в этой сети.
 """
+from __future__ import annotations
+
+from typing import Callable
 
 import questionary
 
@@ -119,11 +122,14 @@ def _build_protocol_options_for_chain(results: list[dict] | None, chain: str) ->
 
 
 def _select(title: str, options: list[str]) -> str | None:
-    """Выбор из списка с помощью questionary."""
+    """Выбор из списка с помощью questionary.
+
+    unsafe_ask: Ctrl+C пробрасывается как KeyboardInterrupt (выход без
+    сохранения), а не превращается в пустой ответ с выбором по умолчанию.
+    """
     if not options:
         return None
-    result = questionary.select(title, choices=options).ask()
-    return result
+    return questionary.select(title, choices=options).unsafe_ask()
 
 
 FORMAT_OPTIONS = [
@@ -152,15 +158,18 @@ MAIN_OPTIONS = [
 ]
 
 
-def show_menu(results: list[dict] | None = None) -> ExportConfig:
+def show_menu(results: list[dict] | None = None, ensure_nfts: Callable[[], None] | None = None) -> ExportConfig:
     """
     Интерактивное меню: двухшаговый выбор.
     Шаг 1: выбор сети. Шаг 2: выбор токена/NFT/протокола в этой сети.
+    ensure_nfts — дождаться фоновой загрузки NFT перед выбором NFT-коллекций.
     """
     choice_str = _select("Что экспортировать? (↑↓ — выбор, Enter — подтвердить)", MAIN_OPTIONS)
     if not choice_str:
         choice_str = MAIN_OPTIONS[0]
     choice = int(choice_str.split(".")[0].strip())
+    if choice in (6, 7) and ensure_nfts:
+        ensure_nfts()
 
     token_filter = None
     nft_filter = None

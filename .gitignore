@@ -10,13 +10,16 @@ venv/
 env/
 
 # Output
+.cache/
 Results/
-debug_log.txt
 logs.txt
+*.log
+.pytest_cache/
 
 # Local inputs (do not commit)
 wallets.txt
 proxy.txt
+rpc.txt
 
 # IDE
 .cursor/
