@@ -1,6 +1,7 @@
 """
 Конфигурация экспорта — что включать в результат
 """
+from __future__ import annotations
 
 from dataclasses import dataclass
 

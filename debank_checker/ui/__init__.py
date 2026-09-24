@@ -1,4 +1,5 @@
 """UI: баннер, логирование."""
+from __future__ import annotations
 
 from debank_checker.ui.banner import create_progress_bar, show
 from debank_checker.ui.logger import error, info, success, warning

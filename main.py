@@ -1,29 +1,34 @@
 """
 DeBank Checker — точка входа (балансы через Rabby API)
 """
+from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from debank_checker.checker import check_wallet
+from debank_checker import __version__
+from debank_checker.checker import check_wallet, pending_nfts, wait_nfts
 from debank_checker.config import (
+    ALLOW_DIRECT,
     DEBUG,
+    DIRECT_WORKERS,
     MAX_WORKERS,
     OUTPUT_DIR,
-    PROXIES_FILE,
     PROXY_MULTIPLIER,
     WALLETS_FILE,
 )
 from debank_checker.export.csv_exporter import export_to_csv
 from debank_checker.export.excel import export_to_excel
 from debank_checker.export.json_exporter import export_to_json
-from debank_checker.proxy.manager import load_proxies, ProxyManager
+from debank_checker.proxy.manager import ProxyManager, drop_dead_proxies, load_proxies
 from debank_checker.ui.banner import create_progress_bar, show
-from debank_checker.ui.logger import error, info, success
+from debank_checker.ui.logger import error, info, success, warning
 from debank_checker.ui.menu import ask_continue, ask_format, show_menu
+
 
 def setup_encoding() -> None:
     """UTF-8 и colorama для Windows."""
@@ -41,17 +46,52 @@ def setup_encoding() -> None:
 
 
 def load_wallets(path: str | Path = WALLETS_FILE) -> list[str]:
-    """Читает адреса из файла."""
+    """Читает адреса из файла (пустые строки и # — пропускаются)."""
     path = Path(path)
-    wallets = []
     if not path.exists():
-        return wallets
+        return []
     with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                wallets.append(line)
-    return wallets
+        return [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+
+
+def worker_count(wallets: int, proxies: int) -> int:
+    """min(MAX_WORKERS, кошельков, прокси × PROXY_MULTIPLIER); без прокси — DIRECT_WORKERS."""
+    return max(1, min(MAX_WORKERS, wallets, proxies * PROXY_MULTIPLIER if proxies else DIRECT_WORKERS))
+
+
+def check_all(wallets: list[str], proxy_manager: ProxyManager, workers: int,
+              on_done=None) -> list[dict]:
+    """Проверяет все кошельки параллельно; on_done(done, total) — после каждого."""
+    results: list[dict] = [None] * len(wallets)  # type: ignore[list-item]
+    completed = [0]
+    lock = threading.Lock()
+
+    def process(idx: int, address: str) -> None:
+        start = time.perf_counter()
+        row = check_wallet(address, proxy_manager, wallet_idx=idx)
+        results[idx] = row
+        if DEBUG:
+            sys.stderr.write(f"[DEBUG] #{idx} DONE | {time.perf_counter() - start:.2f}s total"
+                             f" | status={row['status']}\n")
+            sys.stderr.flush()
+        with lock:
+            completed[0] += 1
+            if on_done:
+                on_done(completed[0], len(wallets))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for fut in [executor.submit(process, i, w) for i, w in enumerate(wallets)]:
+            fut.result()
+    return results
+
+
+def ensure_nfts() -> None:
+    """Дождаться фоновой загрузки NFT (нужны меню NFT и экспорту)."""
+    left = pending_nfts()
+    if left:
+        info(f"Догружаю NFT: осталось {left} кошельков...")
+        if wait_nfts(timeout=120):
+            warning(f"NFT не догружены у {pending_nfts()} кошельков — в экспорте их NFT будут пустыми")
 
 
 def main() -> None:
@@ -65,59 +105,45 @@ def main() -> None:
         error("Нет кошельков для проверки. Добавь адреса в wallets.txt")
         sys.exit(1)
 
-    if not proxies:
-        error("Прокси обязательны. Добавь прокси в proxy.txt")
+    if not proxies and not ALLOW_DIRECT:
+        error("Прокси обязательны. Добавь прокси в proxy.txt (или DBC_DIRECT=1 для прямого режима)")
         sys.exit(1)
 
-    info(f"Кошельков: {len(wallets)}  |  Прокси: {len(proxies)}")
+    if proxies:
+        total_proxies = len(proxies)
+        proxies, _ = drop_dead_proxies(proxies)  # мёртвые исключаются молча
+        if not proxies:
+            error("Ни один прокси не работает — проверь proxy.txt")
+            sys.exit(1)
+    info(f"v{__version__}  |  Кошельков: {len(wallets)}  |  "
+         + (f"Рабочие прокси: {len(proxies)} из {total_proxies}" if proxies else "Прокси: нет (прямой режим)"))
+    workers = worker_count(len(wallets), len(proxies))
+    info(f"Параллельных воркеров: {workers}")
 
-    max_workers = min(MAX_WORKERS, len(wallets), len(proxies) * PROXY_MULTIPLIER)
-    max_workers = max(1, max_workers)
-    info(f"Параллельных воркеров: {max_workers}")
-
-    proxy_manager = ProxyManager(proxies)
-    results: list[dict] = [None] * len(wallets)
-    completed = [0]
-    lock = threading.Lock()
-
-    def process(idx: int, address: str) -> None:
-        start = time.perf_counter()
-        row = check_wallet(address, proxy_manager, wallet_idx=idx)
-        results[idx] = row
-        if DEBUG:
-            elapsed = time.perf_counter() - start
-            sys.stderr.write(f"[DEBUG] #{idx} DONE | {elapsed:.2f}s total | status={row['status']}\n")
-            sys.stderr.flush()
-        with lock:
-            completed[0] += 1
-            done = completed[0]
-            total = len(wallets)
-            bar = create_progress_bar(done, total)
-            print(f"\r{bar}", end="", flush=True)
-
+    started = time.perf_counter()
     print("\r" + create_progress_bar(0, len(wallets)), end="", flush=True)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(process, i, w): i
-            for i, w in enumerate(wallets)
-        }
-        for future in as_completed(futures):
-            future.result()
-
+    results = check_all(wallets, ProxyManager(proxies), workers,
+                        on_done=lambda done, total: print(f"\r{create_progress_bar(done, total)}",
+                                                          end="", flush=True))
     print()
 
-    ok_count = sum(1 for r in results if r and r["status"] == "OK")
-    total_sum = sum(r["total_usd"] for r in results if r and r["status"] == "OK")
+    ok_count = sum(1 for r in results if r["status"] == "OK")
+    unverified = sum(1 for r in results if r["status"] == "UNVERIFIED")
+    total_sum = sum(r["total_usd"] for r in results if r["status"] == "OK")
 
-    info(f"Итого: {ok_count}/{len(results)} успешно  |  Суммарный баланс: ${total_sum:,.2f}")
+    info(f"Итого: {ok_count}/{len(results)} подтверждено  |  Суммарный баланс: ${total_sum:,.2f}"
+         f"  |  {time.perf_counter() - started:.1f} с")
+    if unverified:
+        info(f"Не подтверждено (UNVERIFIED, в сумму не входят): {unverified}")
 
     output_path = Path(OUTPUT_DIR)
     output_path.mkdir(parents=True, exist_ok=True)
 
     while True:
-        export_config = show_menu(results)
+        export_config = show_menu(results, ensure_nfts=ensure_nfts)
         fmt = ask_format()
+        if export_config.nft:  # без NFT в экспорте ждать их догрузки не нужно
+            ensure_nfts()
 
         if fmt == "csv":
             out_path = export_to_csv(results, output_path, config=export_config)
@@ -135,12 +161,21 @@ def main() -> None:
     info("Готово.")
 
 
+def _exit(code: int) -> None:
+    """Немедленный выход. sys.exit ждал бы фоновые потоки (догрузка NFT,
+    запасные запросы к зависшим выборкам) — Ctrl+C «зависал» бы до их конца."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
         info("Прервано пользователем")
-        sys.exit(0)
+        _exit(0)
     except Exception as e:
         error(f"Критическая ошибка: {e}")
-        sys.exit(1)
+        _exit(1)
+    _exit(0)

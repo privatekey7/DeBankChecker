@@ -1,13 +1,14 @@
 """
 Менеджер прокси: загрузка, ротация, rate limiting
 """
+from __future__ import annotations
 
 import threading
 import time
 from collections import deque
 from pathlib import Path
 
-from debank_checker.config import DEBUG, PROXIES_FILE, RATE_LIMIT_REQ_PER_MIN
+from debank_checker.config import DEBUG, PROXIES_FILE, PROXY_COOLDOWN_429_SEC, RATE_LIMIT_REQ_PER_MIN
 
 
 def load_proxies(path: str | Path = PROXIES_FILE) -> list[str]:
@@ -34,11 +35,37 @@ def load_proxies(path: str | Path = PROXIES_FILE) -> list[str]:
     return proxies
 
 
+def drop_dead_proxies(proxies: list[str], timeout: float = 3.0) -> tuple[list[str], list[str]]:
+    """Параллельная предпроверка: прокси, отвергающие подключение (407 /
+    CONNECT failed), отбрасываются. Любой HTTP-ответ — прокси жив; таймаут —
+    тоже оставляем (мог просто притормозить). Заодно прогревает keep-alive
+    соединения к api.rabby.io. Возвращает (живые, мёртвые)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from debank_checker.api import http
+
+    def alive(proxy: str) -> bool:
+        try:
+            http.get("https://api.rabby.io/", proxy, timeout=timeout)
+        except http.ProxyDead:
+            return False
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    if not proxies:
+        return [], []
+    with ThreadPoolExecutor(max_workers=min(len(proxies), 128)) as ex:
+        flags = list(ex.map(alive, proxies))
+    return ([p for p, ok in zip(proxies, flags) if ok],
+            [p for p, ok in zip(proxies, flags) if not ok])
+
+
 class ProxyManager:
     """
     Ротация прокси с учётом rate limit.
     get_proxy() возвращает прокси с наименьшей нагрузкой.
-    report_timeout() временно исключает прокси из выдачи (см. docs/DEBUG_REPORT.md).
+    report_timeout() / report_rate_limited() временно исключают прокси из выдачи.
     """
 
     PROXY_COOLDOWN_AFTER_TIMEOUT = 60  # секунд, не выдавать прокси после таймаута
@@ -64,10 +91,22 @@ class ProxyManager:
 
     def report_timeout(self, proxy: str | None) -> None:
         """Исключить прокси из выдачи на PROXY_COOLDOWN_AFTER_TIMEOUT сек."""
-        if not proxy:
+        self._cooldown(proxy, self.PROXY_COOLDOWN_AFTER_TIMEOUT)
+
+    def report_rate_limited(self, proxy: str | None) -> None:
+        """Прокси получил 429/403 — не выдавать PROXY_COOLDOWN_429_SEC сек."""
+        self._cooldown(proxy, PROXY_COOLDOWN_429_SEC)
+
+    def report_dead(self, proxy: str | None) -> None:
+        """Прокси отверг подключение (407) — исключить до конца запуска."""
+        self._cooldown(proxy, float("inf"))
+
+    def _cooldown(self, proxy: str | None, seconds: float) -> None:
+        if not proxy or not self._proxies:
             return
         with self._lock:
-            self._timeout_until[proxy] = time.time() + self.PROXY_COOLDOWN_AFTER_TIMEOUT
+            until = time.time() + seconds
+            self._timeout_until[proxy] = max(self._timeout_until.get(proxy, 0), until)
 
     def get_proxy(self) -> str | None:
         """Возвращает прокси с наименьшей нагрузкой (round-robin с учётом rate limit)."""
