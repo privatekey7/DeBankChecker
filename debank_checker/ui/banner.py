@@ -1,8 +1,11 @@
 """
 ASCII-заставка в стиле Season7
 """
+from __future__ import annotations
 
 import sys
+
+from debank_checker import __version__
 
 # ANSI цвета
 RESET = "\033[0m"
@@ -59,7 +62,7 @@ def create_subtitle() -> str:
     """Подзаголовок."""
     return "\n".join(
         [
-            _center_text_in_banner(f"{YELLOW}{BRIGHT}BALANCE CHECKER v1.1.0{RESET}"),
+            _center_text_in_banner(f"{YELLOW}{BRIGHT}BALANCE CHECKER v{__version__}{RESET}"),
             _center_text_in_banner(f"{DIM}EVM · Tokens · DeFi · NFT{RESET}"),
             _center_text_in_banner(f"{DIM}TG: https://t.me/privatekey_ai{RESET}"),
         ]
